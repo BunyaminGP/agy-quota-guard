@@ -394,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
                 err_msg = i18n.msg("err_missing_conversation_id", lang=lang)
                 print(err_msg, file=sys.stderr, flush=True)
                 notify.send(
-                    "ERROR: Quota stop occurred but no conversation ID was captured; refusing unsafe resume.",
+                    i18n.msg("notify_no_conversation_id", lang=lang),
                     title="agy-quota-guard ERROR",
                     priority="high",
                     tags="x",
@@ -426,7 +426,7 @@ def main(argv: list[str] | None = None) -> int:
                 flush=True,
             )
             notify.send(
-                f"Quota reset complete ({window_label}). Resuming conversation (round #{round_num + 1}).",
+                i18n.msg("notify_resumed", lang=lang, which=window_label, round=round_num + 1),
                 title="agy-quota-guard RESUMED",
                 priority="default",
                 tags="arrow_forward",
@@ -446,7 +446,7 @@ def main(argv: list[str] | None = None) -> int:
             print("", flush=True)
             print("✅ [agy-quota-guard] Task completed (AGY_QUOTA_DONE found in .agy-quota/progress.md).", flush=True)
             notify.send(
-                f"Task completed in {round_num} round(s).",
+                i18n.msg("notify_done", lang=lang, rounds=round_num),
                 title="agy-quota-guard DONE",
                 priority="default",
                 tags="white_check_mark",
@@ -476,7 +476,7 @@ def main(argv: list[str] | None = None) -> int:
                     flush=True,
                 )
                 notify.send(
-                    f"Aborted after {max_retries} consecutive failures (last exit code {rc}).",
+                    i18n.msg("notify_failed", lang=lang, retries=max_retries, rc=rc),
                     title="agy-quota-guard FAILED",
                     priority="high",
                     tags="x",
@@ -500,6 +500,12 @@ def main(argv: list[str] | None = None) -> int:
         if not conversation_id:
             err_msg = i18n.msg("err_missing_conversation_id", lang=lang)
             print(err_msg, file=sys.stderr, flush=True)
+            notify.send(
+                i18n.msg("notify_no_conversation_id", lang=lang),
+                title="agy-quota-guard ERROR",
+                priority="high",
+                tags="x",
+            )
             return 3
 
         consec_Wait_failures += 1
@@ -507,6 +513,12 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 "ℹ️  [agy-quota-guard] agy exited 0 without AGY_QUOTA_DONE and max continuation attempts reached.",
                 flush=True,
+            )
+            notify.send(
+                i18n.msg("notify_incomplete", lang=lang),
+                title="agy-quota-guard STOPPED",
+                priority="default",
+                tags="warning",
             )
             return 0
 
