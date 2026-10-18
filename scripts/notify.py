@@ -21,7 +21,8 @@ def resolve_url() -> str | None:
     for var in ("AGY_NOTIFY_URL", "AGY_PLUGIN_OPTION_NOTIFY_URL"):
         val = os.environ.get(var, "").strip()
         if val:
-            return val
+            # Only plain HTTP(S) webhooks; never file:// or other urllib handlers.
+            return val if val.lower().startswith(("https://", "http://")) else None
     return None
 
 

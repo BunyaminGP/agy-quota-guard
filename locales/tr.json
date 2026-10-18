@@ -17,5 +17,12 @@
   "resume_hard_reverted": "SERT durdurma sonrasında kota sıfırlandı. Yarıda kalan madde `git stash` ile geri alındı ve `pending` durumuna çekildi. `.agy-quota/progress.md` ve `.agy-quota/todos_state.json` dosyalarını oku, `git status` kontrolü yap ve o maddeyi sıfırdan tekrar uygula. Tüm iş bittiğinde `.agy-quota/progress.md` içine `AGY_QUOTA_DONE` yaz.",
   "resume_hard_unreverted": "Otomatik geri almanın çalışmadığı SERT durdurma sonrasında kota sıfırlandı. `.agy-quota/progress.md` ve `.agy-quota/todos_state.json` dosyalarını oku, yarım kalan değişiklikleri görmek için `git status` ve `git diff` çıktılarını dikkatle incele, yarım kalan maddeyi tamamla veya temizle ve devam et. Tüm iş bittiğinde `.agy-quota/progress.md` içine `AGY_QUOTA_DONE` yaz.",
   "continue_incomplete": "`.agy-quota/progress.md` dosyasında kayıtlı kalan işleri sürdür. Tüm görev bittiğinde `.agy-quota/progress.md` içinde bir satırın başına `AGY_QUOTA_DONE` yaz.",
-  "err_missing_conversation_id": "[agy-quota-guard] HATA: Yakalanmış bir konuşma kimliği (conversation ID) olmadan devam edilemez (-c/--continue yedeklemesi güvenlik nedeniyle kapalıdır)."
+  "err_missing_conversation_id": "[agy-quota-guard] HATA: Yakalanmış bir konuşma kimliği (conversation ID) olmadan devam edilemez (-c/--continue yedeklemesi güvenlik nedeniyle kapalıdır).",
+  "notify_soft": "YUMUŞAK DURDURMA: {which} %{pct} (eşik %{thr}). Sıfırlanma: {resets_at}.",
+  "notify_hard": "SERT DURDURMA: {which} %{pct} (eşik %{thr}). Sıfırlanma: {resets_at}.",
+  "notify_resumed": "Kota sıfırlandı ({which}). Konuşma sürdürülüyor (tur #{round}).",
+  "notify_done": "Görev {rounds} turda tamamlandı.",
+  "notify_failed": "Art arda {retries} hatadan sonra durduruldu (son çıkış kodu {rc}).",
+  "notify_no_conversation_id": "HATA: konuşma kimliği yakalanmadı; güvensiz devam reddedildi.",
+  "notify_incomplete": "Durdu: agy AGY_QUOTA_DONE olmadan çıktı ve devam sınırına ulaşıldı; kayıtlı ilerleme kullanılabilir."
 }
