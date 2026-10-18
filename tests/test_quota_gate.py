@@ -48,6 +48,8 @@ def _make_usage_fixture(tmp_path: Path, buckets: list[dict], name: str = "usage.
 
 def _run_gate(proj: Path, event: str, payload: dict, env_extra: dict | None = None) -> dict:
     env = os.environ.copy()
+    for leaked in ("AGY_NOTIFY_URL", "AGY_PLUGIN_OPTION_NOTIFY_URL", "AGY_LANG", "AGY_PLUGIN_OPTION_LANGUAGE"):
+        env.pop(leaked, None)
     env["AGY_QUOTA_CACHE_FILE"] = str(proj / ".agy-quota" / "test_cache.json")
     if env_extra:
         env.update(env_extra)
@@ -629,3 +631,164 @@ def test_hard_stash_works_when_agy_quota_is_in_gitignore(tmp_path):
     assert (tmp_path / "work.txt").read_text(encoding="utf-8") == "initial\n"
     assert not (tmp_path / "extra.txt").exists()
 
+
+
+def test_soft_marker_escalates_to_hard_and_keeps_checkpoint_saved(tmp_path):
+    fixture_soft = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.15, "reset_time": _future_iso(1800)}],
+        name="fixture_soft.json",
+    )
+    env_soft = {"AGY_USAGE_FIXTURE": str(fixture_soft)}
+    base = {"workspacePaths": [str(tmp_path)], "modelName": "gemini-2.5-pro"}
+    progress = str(tmp_path / ".agy-quota" / "progress.md")
+
+    _run_gate(tmp_path, "PreInvocation", dict(base, invocationNum=1), env_soft)
+    _run_gate(
+        tmp_path,
+        "PostToolUse",
+        dict(base, toolCall={"name": "write_to_file", "args": {"TargetFile": progress}}),
+        env_soft,
+    )
+    stop_file = tmp_path / ".agy-quota" / "STOP.json"
+    marker = json.loads(stop_file.read_text(encoding="utf-8"))
+    assert marker["mode"] == "soft" and marker["checkpoint_saved"] is True
+
+    fixture_hard = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.01, "reset_time": _future_iso(1800)}],
+        name="fixture_hard.json",
+    )
+    env_hard = {"AGY_USAGE_FIXTURE": str(fixture_hard)}
+    res = _run_gate(
+        tmp_path,
+        "PreToolUse",
+        dict(base, toolCall={"name": "run_command", "args": {"CommandLine": "echo hi"}}),
+        env_hard,
+    )
+    assert res["decision"] == "deny"
+    assert "QUOTA HARD STOP" in res["reason"]
+    marker = json.loads(stop_file.read_text(encoding="utf-8"))
+    assert marker["mode"] == "hard"
+    assert marker["escalated_from"] == "soft"
+    assert marker["checkpoint_saved"] is True
+    assert marker["revert_status"] == "no_item"
+
+    post_inv = _run_gate(tmp_path, "PostInvocation", dict(base, invocationNum=1), env_hard)
+    assert post_inv.get("terminationBehavior") == "terminate"
+    marker = json.loads(stop_file.read_text(encoding="utf-8"))
+    assert marker["missing_checkpoint"] is False
+    progress_text = Path(progress).read_text(encoding="utf-8") if Path(progress).exists() else ""
+    assert "without model checkpoint" not in progress_text and "checkpoint yazmadan" not in progress_text
+
+
+def test_pre_invocation_escalates_existing_soft_marker(tmp_path):
+    fixture_soft = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.15, "reset_time": _future_iso(1800)}],
+        name="fixture_soft.json",
+    )
+    base = {"workspacePaths": [str(tmp_path)], "modelName": "gemini-2.5-pro", "invocationNum": 1}
+    _run_gate(tmp_path, "PreInvocation", base, {"AGY_USAGE_FIXTURE": str(fixture_soft)})
+    fixture_hard = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.01, "reset_time": _future_iso(1800)}],
+        name="fixture_hard.json",
+    )
+    out = _run_gate(tmp_path, "PreInvocation", base, {"AGY_USAGE_FIXTURE": str(fixture_hard)})
+    assert "QUOTA HARD STOP" in out["injectSteps"][0]["userMessage"]
+    marker = json.loads((tmp_path / ".agy-quota" / "STOP.json").read_text(encoding="utf-8"))
+    assert marker["mode"] == "hard" and marker["escalated_from"] == "soft"
+
+
+def test_marker_reason_reflects_skipped_revert_not_disabled(tmp_path):
+    _init_git_repo(tmp_path)
+    (tmp_path / "README.md").write_text("# dirty before task\n", encoding="utf-8")
+    fixture_ok = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.50, "reset_time": _future_iso(1800)}],
+        name="fixture_ok.json",
+    )
+    base = {"workspacePaths": [str(tmp_path)], "modelName": "gemini-2.5-pro"}
+    _run_gate(
+        tmp_path,
+        "PostToolUse",
+        dict(base, toolCall={"name": "task_boundary", "args": {"TaskName": "Dirty", "TaskStatus": "in_progress"}}),
+        {"AGY_USAGE_FIXTURE": str(fixture_ok)},
+    )
+    fixture_hard = _make_usage_fixture(
+        tmp_path,
+        [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.01, "reset_time": _future_iso(1800)}],
+        name="fixture_hard.json",
+    )
+    env_hard = {"AGY_USAGE_FIXTURE": str(fixture_hard), "AGY_HARD_ABORT": "1"}
+    _run_gate(
+        tmp_path,
+        "PreToolUse",
+        dict(base, toolCall={"name": "run_command", "args": {"CommandLine": "echo"}}),
+        env_hard,
+    )
+    marker = json.loads((tmp_path / ".agy-quota" / "STOP.json").read_text(encoding="utf-8"))
+    assert marker["revert_status"] == "skipped"
+    out = _run_gate(tmp_path, "PreInvocation", dict(base, invocationNum=2), env_hard)
+    msg = out["injectSteps"][0]["userMessage"]
+    assert "Auto-revert was skipped" in msg
+    assert "is disabled (default)" not in msg
+
+
+def test_soft_stop_sends_localized_status_notification(tmp_path):
+    import http.server
+    import threading
+
+    received: list[tuple[dict, str]] = []
+
+    class Handler(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):  # noqa: N802
+            length = int(self.headers.get("Content-Length", "0"))
+            received.append((dict(self.headers), self.rfile.read(length).decode("utf-8")))
+            self.send_response(200)
+            self.end_headers()
+
+        def log_message(self, *args):
+            pass
+
+    server = http.server.HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        fixture = _make_usage_fixture(
+            tmp_path,
+            [{"id": "gemini-5h", "window": "5h", "remaining_fraction": 0.15, "reset_time": _future_iso(1800)}],
+        )
+        _run_gate(
+            tmp_path,
+            "PreInvocation",
+            {"workspacePaths": [str(tmp_path)], "modelName": "gemini-2.5-pro", "invocationNum": 1},
+            {
+                "AGY_USAGE_FIXTURE": str(fixture),
+                "AGY_NOTIFY_URL": f"http://127.0.0.1:{server.server_port}/topic",
+                "AGY_LANG": "tr",
+            },
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+    assert len(received) == 1
+    headers, body = received[0]
+    assert headers.get("Title") == "agy-quota-guard SOFT STOP"
+    assert body.startswith("[agy-quota-guard] YUMUŞAK DURDURMA")
+    assert str(tmp_path) not in body
+
+
+def test_notify_rejects_non_http_schemes(monkeypatch):
+    sys.path.insert(0, str(SCRIPTS_DIR))
+    try:
+        import notify
+    finally:
+        sys.path.remove(str(SCRIPTS_DIR))
+    monkeypatch.delenv("AGY_PLUGIN_OPTION_NOTIFY_URL", raising=False)
+    monkeypatch.setenv("AGY_NOTIFY_URL", "file:///etc/passwd")
+    assert notify.resolve_url() is None
+    assert notify.send("x") is False
+    monkeypatch.setenv("AGY_NOTIFY_URL", "https://ntfy.sh/topic")
+    assert notify.resolve_url() == "https://ntfy.sh/topic"

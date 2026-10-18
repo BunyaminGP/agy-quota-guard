@@ -702,6 +702,27 @@ def _stash_task_changes(proj: Path, in_progress: dict, aborted_item: str, stamp:
     return stash_created, after_ref
 
 
+def _revert_status(did_revert: bool, skipped: bool, has_item: bool, hard_abort_enabled: bool, is_git: bool) -> str:
+    if did_revert:
+        return "reverted"
+    if skipped:
+        return "skipped"
+    if has_item and not hard_abort_enabled:
+        return "disabled"
+    if has_item and not is_git:
+        return "no_git"
+    return "no_item"
+
+
+_REVERT_STATUS_KEYS = {
+    "reverted": "hard_reason_reverted",
+    "skipped": "hard_reason_revert_skipped_dirty",
+    "disabled": "hard_reason_no_revert_disabled",
+    "no_git": "hard_reason_no_revert_no_git",
+    "no_item": "hard_reason_no_item",
+}
+
+
 def _do_hard_stop(
     proj: Path,
     eval_res: dict,
@@ -709,6 +730,7 @@ def _do_hard_stop(
     is_git: bool,
     hard_abort_enabled: bool,
     lang: str = "en",
+    prev_marker: dict | None = None,
 ) -> tuple[dict, str, str]:
     primary = eval_res["primary"]
     which = primary["label"]
@@ -782,9 +804,16 @@ def _do_hard_stop(
         "aborted_item": aborted_item if in_progress else None,
         "reverted": did_revert,
         "stash_created": stash_created,
+        "revert_status": _revert_status(did_revert, skipped_dirty, bool(in_progress), hard_abort_enabled, is_git),
         "checkpoint_saved": False,
         "missing_checkpoint": False,
     }
+    if isinstance(prev_marker, dict):
+        # Soft -> hard escalation: keep checkpoint progress already recorded under the soft marker
+        # so PostInvocation does not log a false "missing checkpoint" note.
+        marker["escalated_from"] = prev_marker.get("mode")
+        marker["checkpoint_saved"] = bool(prev_marker.get("checkpoint_saved"))
+        marker["soft_prompted"] = bool(prev_marker.get("soft_prompted"))
     _write_stop_marker(proj, marker)
 
     stash_status = i18n.msg("stash_created" if stash_created else "stash_clean", lang=lang)
@@ -813,7 +842,7 @@ def _do_hard_stop(
         user_msg = i18n.msg("hard_user_msg_not_reverted", lang=lang, **fmt)
 
     notify.send(
-        f"HARD STOP: {which} {pct:.1f}% (threshold {thr}%). Resets at {resets_at or 'unknown'}.",
+        i18n.msg("notify_hard", lang=lang, **fmt),
         title="agy-quota-guard HARD STOP",
         priority="high",
         tags="octagonal_sign",
@@ -854,7 +883,7 @@ def _do_soft_stop(proj: Path, eval_res: dict, lang: str = "en") -> tuple[dict, s
     reason = i18n.msg("soft_reason", lang=lang, **fmt)
     user_msg = i18n.msg("soft_user_msg", lang=lang, **fmt)
     notify.send(
-        f"SOFT STOP: {which} {pct:.1f}% (threshold {thr}%). Resets at {resets_at or 'unknown'}.",
+        i18n.msg("notify_soft", lang=lang, **fmt),
         title="agy-quota-guard SOFT STOP",
         priority="default",
         tags="pause_button",
@@ -871,24 +900,18 @@ def _format_marker_reason(marker: dict, lang: str) -> str:
     pct_str = f"{float(pct):.1f}" if isinstance(pct, (int, float)) else str(pct)
     if mode == "hard":
         item = marker.get("aborted_item") or "(unnamed item)"
-        if marker.get("reverted"):
-            return i18n.msg(
-                "hard_reason_reverted",
-                lang=lang,
-                which=which,
-                pct=pct_str,
-                thr=thr,
-                item=item,
-                stash_status=i18n.msg("stash_created", lang=lang),
-                resets_at=resets_at,
-            )
+        status = marker.get("revert_status")
+        if status not in _REVERT_STATUS_KEYS:
+            # Legacy markers without revert_status
+            status = "reverted" if marker.get("reverted") else ("disabled" if marker.get("aborted_item") else "no_item")
         return i18n.msg(
-            "hard_reason_no_revert_disabled",
+            _REVERT_STATUS_KEYS[status],
             lang=lang,
             which=which,
             pct=pct_str,
             thr=thr,
             item=item,
+            stash_status=i18n.msg("stash_created" if marker.get("stash_created") or marker.get("reverted") else "stash_clean", lang=lang),
             resets_at=resets_at,
         )
     return i18n.msg(
@@ -899,6 +922,34 @@ def _format_marker_reason(marker: dict, lang: str) -> str:
         thr=thr,
         resets_at=resets_at,
     )
+
+
+def _escalate_soft_marker(
+    proj: Path,
+    marker: dict | None,
+    state: dict,
+    cfg: dict,
+    model_name: str | None,
+    is_git: bool,
+    lang: str,
+) -> tuple[dict | None, str | None]:
+    """Upgrade an active soft marker to hard if any relevant window now exceeds its hard limit.
+
+    Returns (marker, hard_reason). hard_reason is None when no escalation happened.
+    """
+    if not isinstance(marker, dict) or marker.get("mode") == "hard":
+        return marker, None
+    usage = get_usage()
+    if not usage:
+        return marker, None
+    eval_res = _evaluate_windows(filter_windows_for_model(usage, model_name), cfg)
+    if eval_res is None or eval_res["mode"] != "hard":
+        return marker, None
+    safe_state = _sanitize_state_for_revert(proj, state, is_git)
+    new_marker, reason, _ = _do_hard_stop(
+        proj, eval_res, safe_state, is_git, bool(cfg["hard_abort_enabled"]), lang=lang, prev_marker=marker
+    )
+    return new_marker, reason
 
 
 def _extract_context(hook: dict, cli_event: str | None) -> tuple[str, Path, str, dict, object, str | None]:
@@ -1019,7 +1070,9 @@ def _handle_event(hook: dict, cli_event: str | None) -> int:
             if eval_res is not None:
                 if eval_res["mode"] == "hard" and (marker is None or marker.get("mode") != "hard"):
                     safe_state = _sanitize_state_for_revert(proj, state, is_git)
-                    _do_hard_stop(proj, eval_res, safe_state, is_git, bool(cfg["hard_abort_enabled"]), lang=lang)
+                    _do_hard_stop(
+                        proj, eval_res, safe_state, is_git, bool(cfg["hard_abort_enabled"]), lang=lang, prev_marker=marker
+                    )
                 elif eval_res["mode"] == "soft" and marker is None:
                     # Soft boundary: only when no active item remains (e.g. item just completed or
                     # unplanned work) or when a planning tool switches to a different item.
@@ -1059,6 +1112,7 @@ def _handle_event(hook: dict, cli_event: str | None) -> int:
                         return _emit_json({"injectSteps": [{"userMessage": reason}]})
 
         if marker is not None:
+            marker, _ = _escalate_soft_marker(proj, marker, state, cfg, model_name, is_git, lang)
             marker["soft_prompted"] = True
             _write_stop_marker(proj, marker)
             reason = _format_marker_reason(marker, lang)
@@ -1073,8 +1127,11 @@ def _handle_event(hook: dict, cli_event: str | None) -> int:
         is_ckpt_call = _is_checkpoint_tool_call(tool_name, tool_input, proj)
 
         if marker is not None:
+            marker, hard_reason = _escalate_soft_marker(proj, marker, state, cfg, model_name, is_git, lang)
             if is_ckpt_call:
                 return _emit_json({"decision": "allow"})
+            if hard_reason:
+                return _emit_json({"decision": "deny", "reason": hard_reason})
             deny_msg = i18n.msg(
                 "deny_tool_after_stop",
                 lang=lang,
@@ -1148,6 +1205,8 @@ def _handle_event(hook: dict, cli_event: str | None) -> int:
                         )
                     elif active_item is None:
                         marker, _, _ = _do_soft_stop(proj, eval_res, lang=lang)
+        else:
+            marker, _ = _escalate_soft_marker(proj, marker, state, cfg, model_name, is_git, lang)
 
         if marker is None:
             return _emit_json({})
