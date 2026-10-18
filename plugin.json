@@ -1,0 +1,5 @@
+{
+  "name": "agy-quota-guard",
+  "version": "1.0.0",
+  "description": "Quota-aware lifecycle hooks and auto-resume runner for Google Antigravity CLI (agy). Monitors 5-hour and weekly quota buckets, checkpoints progress before exhaustion, and resumes conversations by ID after quota reset."
+}
