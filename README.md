@@ -1,6 +1,11 @@
 # agy-quota-guard
 
+[![CI](https://github.com/BunyaminGP/agy-quota-guard/actions/workflows/ci.yml/badge.svg)](https://github.com/BunyaminGP/agy-quota-guard/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Quota-aware execution guard and auto-resume runner for **Google Antigravity CLI (`agy`)**.
+
+*[Türkçe için README.tr.md](README.tr.md)*
 
 `agy-quota-guard` monitors your 5-hour session and 7-day weekly quota buckets via `agy -p "/usage" --output-format json` without reading or modifying any authentication/credential files. When quota thresholds are reached, it coordinates a clean checkpoint into `.agy-quota/progress.md`, sleeps until the latest triggered quota window resets, and resumes the exact conversation by ID (`--conversation <ID>`).
 
